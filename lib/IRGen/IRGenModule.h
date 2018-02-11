@@ -469,6 +469,7 @@ public:
   llvm::PointerType *UnownedReferencePtrTy;/// %swift.unowned_reference*
   llvm::Constant *RefCountedNull;      /// %swift.refcounted* null
   llvm::StructType *FunctionPairTy;    /// { i8*, %swift.refcounted* }
+  llvm::StructType *NoEscapeFunctionPairTy;    /// { i8*, %swift.opaque* }
   llvm::FunctionType *DeallocatingDtorTy; /// void (%swift.refcounted*)
   llvm::StructType *TypeMetadataStructTy; /// %swift.type = type { ... }
   llvm::PointerType *TypeMetadataPtrTy;/// %swift.type*
@@ -920,6 +921,9 @@ public:
   /// Imported protocols referenced by types in this module when emitting
   /// reflection metadata.
   llvm::SetVector<const ProtocolDecl *> ImportedProtocols;
+  /// Imported structs referenced by types in this module when emitting
+  /// reflection metadata.
+  llvm::SetVector<const StructDecl *> ImportedStructs;
 
   llvm::Constant *getAddrOfStringForTypeRef(StringRef Str);
   llvm::Constant *getAddrOfFieldName(StringRef Name);

@@ -447,7 +447,8 @@ ConstraintSystem::getPotentialBindings(TypeVariableType *typeVar) {
 
     // Make sure we aren't trying to equate type variables with different
     // lvalue-binding rules.
-    if (auto otherTypeVar = type->getAs<TypeVariableType>()) {
+    if (auto otherTypeVar =
+            type->lookThroughAllOptionalTypes()->getAs<TypeVariableType>()) {
       if (typeVar->getImpl().canBindToLValue() !=
           otherTypeVar->getImpl().canBindToLValue())
         continue;
@@ -511,7 +512,7 @@ ConstraintSystem::getPotentialBindings(TypeVariableType *typeVar) {
           // FIXME: This is really crappy special case of computing a reasonable
           // result based on the given constraints.
           if (binding.Kind == AllowedBindingKind::Subtypes) {
-            if (auto objTy = testType->getAnyOptionalObjectType()) {
+            if (auto objTy = testType->getOptionalObjectType()) {
               updatedBindingType = true;
               testType = objTy;
               continue;

@@ -451,7 +451,11 @@ FunctionCacheEntry::FunctionCacheEntry(const Key &key) {
   // so they share a value witness table.
   switch (flags.getConvention()) {
   case FunctionMetadataConvention::Swift:
-    Data.ValueWitnesses = &VALUE_WITNESS_SYM(FUNCTION_MANGLING);
+    if (!flags.isEscaping()) {
+      Data.ValueWitnesses = &VALUE_WITNESS_SYM(NOESCAPE_FUNCTION_MANGLING);
+    } else {
+      Data.ValueWitnesses = &VALUE_WITNESS_SYM(FUNCTION_MANGLING);
+    }
     break;
 
   case FunctionMetadataConvention::Thin:
@@ -2827,9 +2831,8 @@ allocateWitnessTable(GenericWitnessTable *genericTable,
 
   // The number of mandatory requirements, i.e. requirements lacking
   // default implementations.
-  size_t numMandatoryRequirements =
-    protocol->NumMandatoryRequirements + WitnessTableFirstRequirementOffset;
-  assert(numPatternWitnesses >= numMandatoryRequirements);
+  assert(numPatternWitnesses >= protocol->NumMandatoryRequirements +
+                                    WitnessTableFirstRequirementOffset);
 
   // The total number of requirements.
   size_t numRequirements =

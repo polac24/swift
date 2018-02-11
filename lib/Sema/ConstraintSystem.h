@@ -2380,8 +2380,7 @@ public:
     if (auto *resultFnTy = resultTy->getAs<AnyFunctionType>())
       resultTy = replaceFinalResultTypeWithUnderlying(resultFnTy);
     else
-      resultTy =
-          resultTy->getWithoutSpecifierType()->getAnyOptionalObjectType();
+      resultTy = resultTy->getWithoutSpecifierType()->getOptionalObjectType();
 
     assert(resultTy);
 
@@ -2410,8 +2409,7 @@ public:
     if (auto *fnTy = type->getAs<AnyFunctionType>())
       underlyingType = replaceFinalResultTypeWithUnderlying(fnTy);
     else
-      underlyingType =
-        type->getWithoutSpecifierType()->getAnyOptionalObjectType();
+      underlyingType = type->getWithoutSpecifierType()->getOptionalObjectType();
 
     assert(underlyingType);
 
@@ -2760,6 +2758,9 @@ private:
       if (!x.hasNonDefaultableBindings())
         return false;
 
+      if (x.FullyBound || x.SubtypeOfExistentialType)
+        return false;
+
       llvm::SmallPtrSet<Constraint *, 8> intersection(x.Sources);
       llvm::set_intersect(intersection, y.Sources);
 
@@ -2776,7 +2777,9 @@ private:
           return x.TypeVar == typeVar;
       }
 
-      return false;
+      // If the only difference is default types,
+      // prioritize bindings with fewer of them.
+      return x.NumDefaultableBindings < y.NumDefaultableBindings;
     }
 
     void foundLiteralBinding(ProtocolDecl *proto) {

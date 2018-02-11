@@ -506,6 +506,11 @@ SILFunction *SILDeserializer::readSILFunction(DeclID FID,
 
     if (Callback) Callback->didDeserialize(MF->getAssociatedModule(), fn);
   }
+  // Mark this function as deserialized. This avoids rerunning diagnostic
+  // passes. Certain passes in the madatory pipeline may not work as expected
+  // after arbitrary optimization and lowering.
+  if (!MF->IsSIB)
+    fn->setWasDeserializedCanonical();
 
   assert(fn->empty() &&
          "SILFunction to be deserialized starts being empty.");
@@ -727,15 +732,14 @@ static CastConsumptionKind getCastConsumptionKind(unsigned attr) {
 static SILDeclRef getSILDeclRef(ModuleFile *MF,
                                 ArrayRef<uint64_t> ListOfValues,
                                 unsigned &NextIdx) {
-  assert(ListOfValues.size() >= NextIdx+5 &&
-         "Expect 5 numbers for SILDeclRef");
+  assert(ListOfValues.size() >= NextIdx+4 &&
+         "Expect 4 numbers for SILDeclRef");
   SILDeclRef DRef(cast<ValueDecl>(MF->getDecl(ListOfValues[NextIdx])),
                   (SILDeclRef::Kind)ListOfValues[NextIdx+1],
-                  (swift::ResilienceExpansion)ListOfValues[NextIdx+2],
-                  /*isCurried=*/false, ListOfValues[NextIdx+4] > 0);
-  if (ListOfValues[NextIdx+3] < DRef.getParameterListCount() - 1)
+                  /*isCurried=*/false, ListOfValues[NextIdx+3] > 0);
+  if (ListOfValues[NextIdx+2] < DRef.getParameterListCount() - 1)
     DRef = DRef.asCurried();
-  NextIdx += 5;
+  NextIdx += 4;
   return DRef;
 }
 
@@ -949,6 +953,7 @@ bool SILDeserializer::readSILInstruction(SILFunction *Fn, SILBasicBlock *BB,
   ONEOPERAND_ONETYPE_INST(ObjCMetatypeToObject)
   ONEOPERAND_ONETYPE_INST(ObjCExistentialMetatypeToObject)
   ONEOPERAND_ONETYPE_INST(ConvertFunction)
+  ONEOPERAND_ONETYPE_INST(ConvertEscapeToNoEscape)
   ONEOPERAND_ONETYPE_INST(ThinFunctionToPointer)
   ONEOPERAND_ONETYPE_INST(PointerToThinFunction)
   ONEOPERAND_ONETYPE_INST(ProjectBlockStorage)

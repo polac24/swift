@@ -294,10 +294,10 @@ public:
       : type(ty), isIUO(implicitlyUnwrap) {
 #if !defined(NDEBUG)
     if (implicitlyUnwrap) {
-      assert(ty->getAnyOptionalObjectType() || ty->getAs<AnyFunctionType>());
-      if (!ty->getAnyOptionalObjectType()) {
+      assert(ty->getOptionalObjectType() || ty->getAs<AnyFunctionType>());
+      if (!ty->getOptionalObjectType()) {
         auto fnTy = ty->castTo<AnyFunctionType>();
-        assert(fnTy->getResult()->getAnyOptionalObjectType());
+        assert(fnTy->getResult()->getOptionalObjectType());
       }
     }
 #endif
@@ -336,7 +336,6 @@ public:
 
   bool IsReadingBridgingPCH;
   llvm::SmallVector<clang::serialization::SubmoduleID, 2> PCHImportedSubmodules;
-  llvm::SmallVector<const clang::Module*, 2> DeferredHeaderImports;
 
   const Version CurrentVersion;
 
@@ -529,7 +528,7 @@ public:
   ClangModuleUnit *ImportedHeaderUnit = nullptr;
 
   /// The modules re-exported by imported headers.
-  llvm::SmallVector<ModuleDecl::ImportedModule, 8> ImportedHeaderExports;
+  llvm::SmallVector<clang::Module *, 8> ImportedHeaderExports;
 
   /// The modules that requested imported headers.
   ///

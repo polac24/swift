@@ -199,7 +199,7 @@ void ConstraintSystem::setMustBeMaterializableRecursive(Type type)
          "argument to setMustBeMaterializableRecursive may not be inherently "
          "non-materializable");
   type = getFixedTypeRecursive(type, /*wantRValue=*/false);
-  type = type->lookThroughAllAnyOptionalTypes();
+  type = type->lookThroughAllOptionalTypes();
 
   if (auto typeVar = type->getAs<TypeVariableType>()) {
     typeVar->getImpl().setMustBeMaterializable(getSavedBindings());
@@ -1298,10 +1298,8 @@ ConstraintSystem::getTypeOfMemberReference(
     // Class methods returning Self as well as constructors get the
     // result replaced with the base object type.
     if (auto func = dyn_cast<AbstractFunctionDecl>(value)) {
-      if ((isa<FuncDecl>(func) &&
-           cast<FuncDecl>(func)->hasDynamicSelf()) ||
-          (isa<ConstructorDecl>(func) &&
-           !baseObjTy->getAnyOptionalObjectType())) {
+      if ((isa<FuncDecl>(func) && cast<FuncDecl>(func)->hasDynamicSelf()) ||
+          (isa<ConstructorDecl>(func) && !baseObjTy->getOptionalObjectType())) {
         openedType = openedType->replaceCovariantResultType(
           baseObjTy,
             func->getNumParameterLists());
@@ -1389,6 +1387,29 @@ void ConstraintSystem::addOverloadSet(Type boundType,
   if (choices.size() == 1) {
     addBindOverloadConstraint(boundType, choices.front(), locator, useDC);
     return;
+  }
+
+  // Performance hack: if there are two generic overloads, and one is
+  // more specialized than the other, prefer the more-specialized one.
+  if (!favoredChoice && choices.size() == 2 &&
+      choices[0].isDecl() && choices[1].isDecl() &&
+      isa<AbstractFunctionDecl>(choices[0].getDecl()) &&
+      cast<AbstractFunctionDecl>(choices[0].getDecl())->isGeneric() &&
+      isa<AbstractFunctionDecl>(choices[1].getDecl()) &&
+      cast<AbstractFunctionDecl>(choices[1].getDecl())->isGeneric()) {
+    switch (TC.compareDeclarations(DC, choices[0].getDecl(),
+                                   choices[1].getDecl())) {
+    case Comparison::Better:
+      favoredChoice = const_cast<OverloadChoice *>(&choices[0]);
+      break;
+
+    case Comparison::Worse:
+      favoredChoice = const_cast<OverloadChoice *>(&choices[1]);
+      break;
+
+    case Comparison::Unordered:
+      break;
+    }
   }
 
   SmallVector<Constraint *, 4> overloads;
@@ -1618,8 +1639,8 @@ void ConstraintSystem::resolveOverload(ConstraintLocator *locator,
         if (choice.isImplicitlyUnwrappedValueOrReturnValue()) {
           auto resultTy = fnTy->getResult();
           // We expect the element type to be a double-optional.
-          auto optTy = resultTy->getAnyOptionalObjectType();
-          assert(optTy->getAnyOptionalObjectType());
+          auto optTy = resultTy->getOptionalObjectType();
+          assert(optTy->getOptionalObjectType());
 
           // For our original type T -> U?? we will generate:
           // A disjunction V = { U?, U }
@@ -1809,8 +1830,6 @@ Type simplifyTypeImpl(ConstraintSystem &cs, Type type, Fn getFixedTypeFn) {
       // FIXME: It's kind of weird in general that we have to look
       // through lvalue, inout and IUO types here
       Type lookupBaseType = newBase->getWithoutSpecifierType();
-
-      auto *module = cs.DC->getParentModule();
 
       if (lookupBaseType->mayHaveMembers()) {
         auto subs = lookupBaseType->getContextSubstitutionMap(

@@ -1025,6 +1025,7 @@ public:
   void visitCondFailInst(CondFailInst *i);
   
   void visitConvertFunctionInst(ConvertFunctionInst *i);
+  void visitConvertEscapeToNoEscapeInst(ConvertEscapeToNoEscapeInst *i);
   void visitThinFunctionToPointerInst(ThinFunctionToPointerInst *i);
   void visitPointerToThinFunctionInst(PointerToThinFunctionInst *i);
   void visitUpcastInst(UpcastInst *i);
@@ -3820,7 +3821,7 @@ void IRGenSILFunction::visitStoreUnownedInst(swift::StoreUnownedInst *i) {
 static bool hasReferenceSemantics(IRGenSILFunction &IGF,
                                   SILType silType) {
   auto operType = silType.getSwiftRValueType();
-  auto valueType = operType->getAnyOptionalObjectType();
+  auto valueType = operType->getOptionalObjectType();
   auto objType = valueType ? valueType : operType;
   return (objType->mayHaveSuperclass()
           || objType->isClassExistentialType()
@@ -4297,6 +4298,18 @@ void IRGenSILFunction::visitConvertFunctionInst(swift::ConvertFunctionInst *i) {
   // This instruction is specified to be a no-op.
   Explosion temp = getLoweredExplosion(i->getOperand());
   setLoweredExplosion(i, temp);
+}
+
+void IRGenSILFunction::visitConvertEscapeToNoEscapeInst(
+    swift::ConvertEscapeToNoEscapeInst *i) {
+  // This instruction makes the context trivial.
+  Explosion in = getLoweredExplosion(i->getOperand());
+  llvm::Value *fn = in.claimNext();
+  llvm::Value *ctx = in.claimNext();
+  Explosion out;
+  out.add(fn);
+  out.add(Builder.CreateBitCast(ctx, IGM.OpaquePtrTy));
+  setLoweredExplosion(i, out);
 }
 
 void IRGenSILFunction::visitThinFunctionToPointerInst(

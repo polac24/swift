@@ -476,7 +476,6 @@ std::string ASTMangler::mangleObjCRuntimeName(const NominalTypeDecl *Nominal) {
   Node *NewGlobal = Dem.createNode(Node::Kind::Global);
   NewGlobal->addChild(TyMangling, Dem);
   std::string OldName = mangleNodeOld(NewGlobal);
-  verifyOld(OldName);
   return OldName;
 #endif
 }
@@ -754,10 +753,6 @@ void ASTMangler::appendType(Type type) {
     case TypeKind::Optional:
     case TypeKind::Dictionary:
       return appendSugaredType<SyntaxSugarType>(type);
-
-    case TypeKind::ImplicitlyUnwrappedOptional: {
-      llvm_unreachable("Should no longer have IUOs");
-    }
 
     case TypeKind::ExistentialMetatype: {
       ExistentialMetatypeType *EMT = cast<ExistentialMetatypeType>(tybase);
@@ -1629,8 +1624,14 @@ void ASTMangler::appendFunctionType(AnyFunctionType *fn) {
   case AnyFunctionType::Representation::Thin:
     return appendOperator("Xf");
   case AnyFunctionType::Representation::Swift:
-    if (fn->isAutoClosure())
-      return appendOperator("XK");
+    if (fn->isAutoClosure()) {
+      if (fn->isNoEscape())
+        return appendOperator("XK");
+      else
+        return appendOperator("XA");
+    } else if (fn->isNoEscape()) {
+      return appendOperator("XE");
+    }
     return appendOperator("c");
 
   case AnyFunctionType::Representation::CFunctionPointer:

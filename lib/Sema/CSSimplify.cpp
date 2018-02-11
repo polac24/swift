@@ -1067,6 +1067,8 @@ ConstraintSystem::matchFunctionTypes(FunctionType *func1, FunctionType *func2,
       return getTypeMatchFailure(locator);
     if (kind < ConstraintKind::Subtype)
       return getTypeMatchFailure(locator);
+
+    increaseScore(SK_FunctionConversion);
   }
   
   // A non-throwing function can be a subtype of a throwing function.
@@ -1151,6 +1153,45 @@ ConstraintSystem::matchFunctionTypes(FunctionType *func1, FunctionType *func2,
         if (auto *paren2 = dyn_cast<ParenType>(func2Input.getPointer())) {
           if (!func1Input->hasParenSugar())
             func2Input = paren2->getUnderlyingType();
+        } else if (getASTContext().isSwiftVersionAtLeast(4)
+                   && !getASTContext().isSwiftVersionAtLeast(5)
+                   && !func2Input->hasParenSugar()) {
+          auto *simplified = locator.trySimplifyToExpr();
+          // We somehow let tuple unsplatting function conversions
+          // through in some cases in Swift 4, so let's let that
+          // continue to work, but only for Swift 4.
+          if (simplified && isa<DeclRefExpr>(simplified))
+            if (auto *paren1 = dyn_cast<ParenType>(func1Input.getPointer()))
+              func1Input = paren1->getUnderlyingType();
+        }
+      }
+    }
+  }
+
+  // https://bugs.swift.org/browse/SR-6796
+  // Add a super-narrow hack to allow:
+  //   (()) -> T to be passed in place of () -> T
+  if (getASTContext().isSwiftVersionAtLeast(4) &&
+      !getASTContext().isSwiftVersionAtLeast(5)) {
+    SmallVector<LocatorPathElt, 4> path;
+    locator.getLocatorParts(path);
+
+    // Find the last path element, skipping GenericArgument elements
+    // so that we allow this exception in cases of optional types, and
+    // skipping OptionalPayload elements so that we allow this
+    // exception in cases of optional injection.
+    auto last = std::find_if(
+        path.rbegin(), path.rend(), [](LocatorPathElt &elt) -> bool {
+          return elt.getKind() != ConstraintLocator::GenericArgument &&
+                 elt.getKind() != ConstraintLocator::OptionalPayload;
+        });
+
+    if (last != path.rend()) {
+      if (last->getKind() == ConstraintLocator::ApplyArgToParam) {
+        if (auto *paren1 = dyn_cast<ParenType>(func1Input.getPointer())) {
+          auto innerTy = paren1->getUnderlyingType();
+          if (func2Input->isVoid() && innerTy->isVoid())
+            func1Input = innerTy;
         }
       }
     }
@@ -1351,14 +1392,6 @@ static bool isStringCompatiblePointerBaseType(TypeChecker &TC,
   return false;
 }
 
-/// Determine whether this is an implicitly unwrapped optional type.
-static OptionalTypeKind classifyAsOptionalType(Type type) {
-  if (auto boundGeneric = type->getAs<BoundGenericType>())
-    return boundGeneric->getDecl()->classifyAsOptionalType();
-
-  return OTK_None;
-}
-
 /// Determine whether the first type with the given number of optionals
 /// is potentially more optional than the second type with its number of
 /// optionals.
@@ -1378,42 +1411,22 @@ static void enumerateOptionalConversionRestrictions(
                     ConstraintKind kind, ConstraintLocatorBuilder locator,
                     llvm::function_ref<void(ConversionRestrictionKind)> fn) {
   SmallVector<Type, 2> optionals1;
-  Type objType1 = type1->lookThroughAllAnyOptionalTypes(optionals1);
+  Type objType1 = type1->lookThroughAllOptionalTypes(optionals1);
 
   SmallVector<Type, 2> optionals2;
-  Type objType2 = type2->lookThroughAllAnyOptionalTypes(optionals2);
+  Type objType2 = type2->lookThroughAllOptionalTypes(optionals2);
 
   if (optionals1.empty() && optionals2.empty())
     return;
 
   // Optional-to-optional.
-  if (!optionals1.empty() && !optionals2.empty()) {
-    auto optionalKind1 = classifyAsOptionalType(optionals1.front());
-    auto optionalKind2 = classifyAsOptionalType(optionals2.front());
-
-    // Break cyclic conversions between T? and U! by only allowing it for
-    // conversion constraints.
-    if (kind >= ConstraintKind::Conversion ||
-        locator.isFunctionConversion() ||
-        !(optionalKind1 == OTK_Optional &&
-          optionalKind2 == OTK_ImplicitlyUnwrappedOptional))
-      fn(ConversionRestrictionKind::OptionalToOptional);
-  }
+  if (!optionals1.empty() && !optionals2.empty())
+    fn(ConversionRestrictionKind::OptionalToOptional);
 
   // Inject a value into an optional.
   if (isPotentiallyMoreOptionalThan(objType2, optionals2.size(),
                                     objType1, optionals1.size())) {
     fn(ConversionRestrictionKind::ValueToOptional);
-  }
-
-  // Unwrap an implicitly-unwrapped optional.
-  if (!optionals1.empty() &&
-      classifyAsOptionalType(optionals1.front())
-        == OTK_ImplicitlyUnwrappedOptional &&
-      kind >= ConstraintKind::Conversion &&
-      isPotentiallyMoreOptionalThan(objType1, optionals1.size(),
-                                    objType2, optionals2.size())) {
-    fn(ConversionRestrictionKind::ForceUnchecked);
   }
 }
 
@@ -1842,8 +1855,10 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
       // If the 2nd type is an autoclosure, then we don't actually want to
       // treat these as parallel. The first type needs wrapping in a closure
       // despite already being a function type.
-      if (!func1->isAutoClosure() && func2->isAutoClosure())
+      if (!func1->isAutoClosure() && func2->isAutoClosure()) {
+        increaseScore(SK_FunctionConversion);
         break;
+      }
       return matchFunctionTypes(func1, func2, kind, flags, locator);
     }
 
@@ -2087,8 +2102,8 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
     // Pointer arguments can be converted from pointer-compatible types.
     if (kind >= ConstraintKind::ArgumentConversion) {
       Type unwrappedType2 = type2;
-      OptionalTypeKind type2OptionalKind;
-      if (Type unwrapped = type2->getAnyOptionalObjectType(type2OptionalKind))
+      bool type2IsOptional;
+      if (Type unwrapped = type2->getOptionalObjectType(type2IsOptional))
         unwrappedType2 = unwrapped;
       PointerTypeKind pointerKind;
       if (Type pointeeTy =
@@ -2127,9 +2142,9 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
             // We can potentially convert from an UnsafeMutablePointer
             // of a different type, if we're a void pointer.
             Type unwrappedType1 = type1;
-            OptionalTypeKind type1OptionalKind;
+            bool type1IsOptional;
             if (Type unwrapped =
-                  type1->getAnyOptionalObjectType(type1OptionalKind)) {
+                    type1->getOptionalObjectType(type1IsOptional)) {
               unwrappedType1 = unwrapped;
             }
 
@@ -2140,8 +2155,7 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
             PointerTypeKind type1PointerKind;
             bool type1IsPointer{
                 unwrappedType1->getAnyPointerElementType(type1PointerKind)};
-            bool optionalityMatches =
-                type1OptionalKind == OTK_None || type2OptionalKind != OTK_None;
+            bool optionalityMatches = !type1IsOptional || type2IsOptional;
             if (type1IsPointer && optionalityMatches) {
               if (type1PointerKind == PTK_UnsafeMutablePointer) {
                 // Favor an UnsafeMutablePointer-to-UnsafeMutablePointer
@@ -2591,23 +2605,20 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyConformsToConstraint(
     return SolutionKind::Error;
 
   // See if there's anything we can do to fix the conformance:
-  OptionalTypeKind optionalKind;
-  if (auto optionalObjectType = type->getAnyOptionalObjectType(optionalKind)) {
-    if (optionalKind == OTK_Optional) {
-      TypeMatchOptions subflags = getDefaultDecompositionOptions(flags);
-      // The underlying type of an optional may conform to the protocol if the
-      // optional doesn't; suggest forcing if that's the case.
-      auto result = simplifyConformsToConstraint(
+  if (auto optionalObjectType = type->getOptionalObjectType()) {
+    TypeMatchOptions subflags = getDefaultDecompositionOptions(flags);
+    // The underlying type of an optional may conform to the protocol if the
+    // optional doesn't; suggest forcing if that's the case.
+    auto result = simplifyConformsToConstraint(
         optionalObjectType, protocol, kind,
         locator.withPathElement(LocatorPathElt::getGenericArgument(0)),
         subflags);
-      if (result == SolutionKind::Solved) {
-        if (recordFix(FixKind::ForceOptional, getConstraintLocator(locator))) {
-          return SolutionKind::Error;
-        }
+    if (result == SolutionKind::Solved) {
+      if (recordFix(FixKind::ForceOptional, getConstraintLocator(locator))) {
+        return SolutionKind::Error;
       }
-      return result;
     }
+    return result;
   }
   
   // There's nothing more we can do; fail.
@@ -2681,8 +2692,8 @@ ConstraintSystem::simplifyCheckedCastConstraint(
 
     // Peel off optionals metatypes from the types, because we might cast through
     // them.
-    toType = toType->lookThroughAllAnyOptionalTypes();
-    fromType = fromType->lookThroughAllAnyOptionalTypes();
+    toType = toType->lookThroughAllOptionalTypes();
+    fromType = fromType->lookThroughAllOptionalTypes();
 
     // Peel off metatypes, since if we can cast two types, we can cast their
     // metatypes.
@@ -2790,7 +2801,7 @@ ConstraintSystem::simplifyOptionalObjectConstraint(
   }
   
   // If the base type is not optional, the constraint fails.
-  Type objectTy = optTy->getAnyOptionalObjectType();
+  Type objectTy = optTy->getOptionalObjectType();
   if (!objectTy)
     return SolutionKind::Error;
   
@@ -3168,8 +3179,8 @@ performMemberLookup(ConstraintKind constraintKind, DeclName memberName,
     // type.
     if (isUnwrappedOptional) {
       auto ovlBaseTy = MetatypeType::get(baseTy->castTo<MetatypeType>()
-                                    ->getInstanceType()
-                                    ->getAnyOptionalObjectType());
+                                             ->getInstanceType()
+                                             ->getOptionalObjectType());
       return OverloadChoice::getDeclViaUnwrappedOptional(ovlBaseTy, cand,
                                                          functionRefKind);
     }
@@ -3219,7 +3230,7 @@ retry_after_fail:
   if (result.ViableCandidates.empty() &&
       baseObjTy->is<AnyMetatypeType>() &&
       constraintKind == ConstraintKind::UnresolvedValueMember) {
-    if (auto objectType = instanceTy->getAnyOptionalObjectType()) {
+    if (auto objectType = instanceTy->getOptionalObjectType()) {
       if (objectType->mayHaveMembers()) {
         LookupResult &optionalLookup = lookupMember(objectType, memberName);
         for (auto result : optionalLookup)
@@ -3474,7 +3485,7 @@ ConstraintSystem::simplifyBridgingConstraint(Type type1,
   // unwrapped.
   auto unwrapType = [&](Type type) -> std::pair<Type, unsigned> {
     unsigned count = 0;
-    while (Type objectType = type->getAnyOptionalObjectType()) {
+    while (Type objectType = type->getOptionalObjectType()) {
       ++count;
 
       TypeMatchOptions unusedOptions;
@@ -4176,7 +4187,7 @@ ConstraintSystem::simplifyApplicableFnConstraint(
 }
 
 static Type getBaseTypeForPointer(ConstraintSystem &cs, TypeBase *type) {
-  if (Type unwrapped = type->getAnyOptionalObjectType())
+  if (Type unwrapped = type->getOptionalObjectType())
     type = unwrapped.getPointer();
 
   auto pointeeTy = type->getAnyPointerElementType();
@@ -4316,7 +4327,7 @@ ConstraintSystem::simplifyRestrictedConstraintImpl(
       return formUnsolved();
 
     if (auto generic2 = type2->getAs<BoundGenericType>()) {
-      if (generic2->getDecl()->classifyAsOptionalType()) {
+      if (generic2->getDecl()->isOptionalDecl()) {
         return matchTypes(type1, generic2->getGenericArgs()[0],
                           matchKind, subflags,
                           locator.withPathElement(
@@ -4342,8 +4353,8 @@ ConstraintSystem::simplifyRestrictedConstraintImpl(
     assert(matchKind >= ConstraintKind::Subtype);
     if (auto generic1 = type1->getAs<BoundGenericType>()) {
       if (auto generic2 = type2->getAs<BoundGenericType>()) {
-        if (generic1->getDecl()->classifyAsOptionalType() &&
-            generic2->getDecl()->classifyAsOptionalType())
+        if (generic1->getDecl()->isOptionalDecl() &&
+            generic2->getDecl()->isOptionalDecl())
           return matchTypes(generic1->getGenericArgs()[0],
                             generic2->getGenericArgs()[0],
                             matchKind, subflags,
@@ -4369,19 +4380,6 @@ ConstraintSystem::simplifyRestrictedConstraintImpl(
 
     if (type1->isTypeVariableOrMember())
       return formUnsolved();
-
-    if (auto boundGenericType1 = type1->getAs<BoundGenericType>()) {
-      if (boundGenericType1->getDecl()->classifyAsOptionalType()
-            == OTK_ImplicitlyUnwrappedOptional) {
-        assert(boundGenericType1->getGenericArgs().size() == 1);
-        Type valueType1 = boundGenericType1->getGenericArgs()[0];
-        increaseScore(SK_ForceUnchecked);
-        return matchTypes(valueType1, type2,
-                          matchKind, subflags,
-                          locator.withPathElement(
-                            LocatorPathElt::getGenericArgument(0)));
-      }
-    }
 
     return SolutionKind::Error;
   }
@@ -4552,7 +4550,7 @@ ConstraintSystem::simplifyRestrictedConstraintImpl(
   case ConversionRestrictionKind::HashableToAnyHashable: {
     // We never want to do this if the LHS is already AnyHashable.
     if (isAnyHashableType(
-            type1->getRValueType()->lookThroughAllAnyOptionalTypes())) {
+            type1->getRValueType()->lookThroughAllOptionalTypes())) {
       return SolutionKind::Error;
     }
 

@@ -81,7 +81,9 @@ bool CompilerInstance::setup(const CompilerInvocation &Invok) {
 
   // If we are asked to emit a module documentation file, configure lexing and
   // parsing to remember comments.
-  if (!Invocation.getFrontendOptions().ModuleDocOutputPath.empty())
+  if (!Invocation.getFrontendOptions()
+           .InputsAndOutputs.supplementaryOutputs()
+           .ModuleDocOutputPath.empty())
     Invocation.getLangOptions().AttachCommentsToDecls = true;
 
   // If we are doing index-while-building, configure lexing and parsing to
@@ -813,12 +815,12 @@ void CompilerInstance::performParseOnly(bool EvaluateConditionals) {
          "Loaded a module during parse-only");
 }
 
-void CompilerInstance::freeContextAndSIL() {
+void CompilerInstance::freeASTContext() {
   Context.reset();
-  TheSILModule.reset();
   MainModule = nullptr;
   SML = nullptr;
   PrimaryBufferIDs.clear();
   PrimarySourceFiles.clear();
 }
 
+void CompilerInstance::freeSILModule() { TheSILModule.reset(); }

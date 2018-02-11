@@ -2456,6 +2456,7 @@ Parser::parseDecl(ParseDeclOptions Flags,
       MayNeedOverrideCompletion = true;
       break;
     case tok::kw_associatedtype:
+      DeclParsingContext.setCreateSyntax(SyntaxKind::AssociatedtypeDecl);
       DeclResult = parseDeclAssociatedType(Flags, Attributes);
       break;
     case tok::kw_enum:
@@ -2475,9 +2476,13 @@ Parser::parseDecl(ParseDeclOptions Flags,
       break;
     }
     case tok::kw_init:
+      DeclParsingContext.collectNodesInPlace(SyntaxKind::ModifierList);
+      DeclParsingContext.setCreateSyntax(SyntaxKind::InitializerDecl);
       DeclResult = parseDeclInit(Flags, Attributes);
       break;
     case tok::kw_deinit:
+      DeclParsingContext.collectNodesInPlace(SyntaxKind::ModifierList);
+      DeclParsingContext.setCreateSyntax(SyntaxKind::DeinitializerDecl);
       DeclResult = parseDeclDeinit(Flags, Attributes);
       break;
     case tok::kw_operator:
@@ -2501,6 +2506,8 @@ Parser::parseDecl(ParseDeclOptions Flags,
       break;
 
     case tok::kw_subscript: {
+      DeclParsingContext.collectNodesInPlace(SyntaxKind::ModifierList);
+      DeclParsingContext.setCreateSyntax(SyntaxKind::SubscriptDecl);
       if (StaticLoc.isValid()) {
         diagnose(Tok, diag::subscript_static, StaticSpelling)
           .fixItRemove(SourceRange(StaticLoc));
@@ -3492,6 +3499,8 @@ ParserResult<TypeDecl> Parser::parseDeclAssociatedType(Parser::ParseDeclOptions 
   
   ParserResult<TypeRepr> UnderlyingTy;
   if (Tok.is(tok::equal)) {
+    SyntaxParsingContext InitContext(SyntaxContext,
+                                     SyntaxKind::TypeInitializerClause);
     consumeToken(tok::equal);
     UnderlyingTy = parseType(diag::expected_type_in_associatedtype);
     Status |= UnderlyingTy;
@@ -3896,7 +3905,8 @@ bool Parser::parseGetSetImpl(ParseDeclOptions Flags,
   if (Flags.contains(PD_InProtocol) || isInSILMode()) {
     if (Tok.is(tok::r_brace)) {
       // Give syntax node an empty statement list.
-      SyntaxParsingContext StmtListContext(SyntaxContext, SyntaxKind::StmtList);
+      SyntaxParsingContext StmtListContext(SyntaxContext,
+                                           SyntaxKind::CodeBlockItemList);
     }
     while (Tok.isNot(tok::r_brace)) {
       if (Tok.is(tok::eof))
@@ -3979,7 +3989,8 @@ bool Parser::parseGetSetImpl(ParseDeclOptions Flags,
   // an implicit fallthrough off the end.
   if (Tok.is(tok::r_brace)) {
     // Give syntax node an empty statement list.
-    SyntaxParsingContext StmtListContext(SyntaxContext, SyntaxKind::StmtList);
+    SyntaxParsingContext StmtListContext(SyntaxContext,
+                                         SyntaxKind::CodeBlockItemList);
     diagnose(Tok, diag::computed_property_no_accessors);
     return true;
   }
@@ -5821,30 +5832,36 @@ Parser::parseDeclSubscript(ParseDeclOptions Flags,
   if (SignatureHasCodeCompletion && !CodeCompletion)
     return makeParserCodeCompletionStatus();
   
-  // '->'
   SourceLoc ArrowLoc;
-  if (!consumeIf(tok::arrow, ArrowLoc)) {
-    if (!Indices.isParseError())
-      diagnose(Tok, diag::expected_arrow_subscript);
-    Status.setIsParseError();
-  }
+  ParserResult<TypeRepr> ElementTy;
+  {
+    SyntaxParsingContext ReturnCtxt(SyntaxContext, SyntaxKind::ReturnClause);
 
-  if (!ArrowLoc.isValid() && (Indices.isNull() || Indices.get()->size() == 0)) {
-    // This doesn't look much like a subscript, so let regular recovery take
-    // care of it.
-    return Status;
-  }
-  
-  // type
-  ParserResult<TypeRepr> ElementTy = parseType(diag::expected_type_subscript);
-  Status |= ElementTy;
-  SignatureHasCodeCompletion |= ElementTy.hasCodeCompletion();
-  if (SignatureHasCodeCompletion && !CodeCompletion) {
-    return makeParserCodeCompletionStatus();
-  }
-  if (ElementTy.isNull()) {
-    // Always set an element type.
-    ElementTy = makeParserResult(ElementTy, new (Context) ErrorTypeRepr());
+    // '->'
+    if (!consumeIf(tok::arrow, ArrowLoc)) {
+      if (!Indices.isParseError())
+        diagnose(Tok, diag::expected_arrow_subscript);
+      Status.setIsParseError();
+    }
+
+    if (!ArrowLoc.isValid() &&
+        (Indices.isNull() || Indices.get()->size() == 0)) {
+      // This doesn't look much like a subscript, so let regular recovery take
+      // care of it.
+      return Status;
+    }
+
+    // type
+    ElementTy = parseType(diag::expected_type_subscript);
+    Status |= ElementTy;
+    SignatureHasCodeCompletion |= ElementTy.hasCodeCompletion();
+    if (SignatureHasCodeCompletion && !CodeCompletion) {
+      return makeParserCodeCompletionStatus();
+    }
+    if (ElementTy.isNull()) {
+      // Always set an element type.
+      ElementTy = makeParserResult(ElementTy, new (Context) ErrorTypeRepr());
+    }
   }
 
   diagnoseWhereClauseInGenericParamList(GenericParams);

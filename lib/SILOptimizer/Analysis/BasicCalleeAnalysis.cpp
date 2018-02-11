@@ -31,6 +31,11 @@ bool CalleeList::allCalleesVisible() {
   for (SILFunction *Callee : *this) {
     if (Callee->isExternalDeclaration())
       return false;
+    // Do not consider functions in other modules (libraries) because of library
+    // evolution: such function may behave differently in future/past versions
+    // of the library.
+    if (Callee->isAvailableExternally())
+      return false;
   }
   return true;
 }
@@ -249,7 +254,7 @@ CalleeList CalleeCache::getCalleeList(SILInstruction *I) const {
   assert((isa<StrongReleaseInst>(I) || isa<ReleaseValueInst>(I)) &&
          "A deallocation instruction expected");
   auto Ty = I->getOperand(0)->getType();
-  while (auto payloadTy = Ty.getAnyOptionalObjectType())
+  while (auto payloadTy = Ty.getOptionalObjectType())
     Ty = payloadTy;
   auto Class = Ty.getClassOrBoundGenericClass();
   if (!Class || Class->hasClangNode() || !Class->hasDestructor())

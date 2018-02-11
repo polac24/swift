@@ -1030,7 +1030,7 @@ bool TypeChecker::typeCheckCatchPattern(CatchStmt *S, DeclContext *DC) {
 static bool isDiscardableType(Type type) {
   return (type->hasError() ||
           type->isUninhabited() ||
-          type->lookThroughAllAnyOptionalTypes()->isVoid());
+          type->lookThroughAllOptionalTypes()->isVoid());
 }
 
 static void diagnoseIgnoredLiteral(TypeChecker &TC, LiteralExpr *LE) {
@@ -1423,6 +1423,9 @@ bool TypeChecker::typeCheckAbstractFunctionBody(AbstractFunctionDecl *AFD) {
   Optional<FunctionBodyTimer> timer;
   if (DebugTimeFunctionBodies || WarnLongFunctionBodies)
     timer.emplace(AFD, DebugTimeFunctionBodies, WarnLongFunctionBodies);
+
+  for (auto paramList : AFD->getParameterLists())
+    requestRequiredNominalTypeLayoutForParameters(paramList);
 
   if (typeCheckAbstractFunctionBodyUntil(AFD, SourceLoc()))
     return true;

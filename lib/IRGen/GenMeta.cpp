@@ -722,9 +722,11 @@ namespace {
 
       // Map the convention to a runtime metadata value.
       FunctionMetadataConvention metadataConvention;
+      bool isEscaping = false;
       switch (type->getRepresentation()) {
       case FunctionTypeRepresentation::Swift:
         metadataConvention = FunctionMetadataConvention::Swift;
+        isEscaping = !type->isNoEscape();
         break;
       case FunctionTypeRepresentation::Thin:
         metadataConvention = FunctionMetadataConvention::Thin;
@@ -741,7 +743,8 @@ namespace {
                           .withNumParameters(numParams)
                           .withConvention(metadataConvention)
                           .withThrows(type->throws())
-                          .withParameterFlags(hasFlags);
+                          .withParameterFlags(hasFlags)
+                          .withEscaping(isEscaping);
 
       auto flags = llvm::ConstantInt::get(IGF.IGM.SizeTy,
                                           flagsVal.getIntValue());
@@ -1626,7 +1629,7 @@ namespace {
 
     llvm::Value *visitBoundGenericEnumType(CanBoundGenericEnumType type) {
       // Optionals have a lowered payload type, so we recurse here.
-      if (auto objectTy = CanType(type).getAnyOptionalObjectType()) {
+      if (auto objectTy = CanType(type).getOptionalObjectType()) {
         auto payloadMetadata = visit(objectTy);
         llvm::Value *args[] = { payloadMetadata };
         llvm::Type *types[] = { IGF.IGM.TypeMetadataPtrTy };
@@ -2022,7 +2025,7 @@ namespace {
       case Ownership::Strong:
         llvm_unreachable("shouldn't be a ReferenceStorageType");
       case Ownership::Weak:
-        referent = type.getReferentType().getAnyOptionalObjectType();
+        referent = type.getReferentType().getOptionalObjectType();
         break;
       case Ownership::Unmanaged:
       case Ownership::Unowned:
@@ -2668,13 +2671,6 @@ namespace {
                          NominalTypeDecl *type,
                          ArrayRef<EnumImplStrategy::Element> enumElements) {
     SmallVector<FieldTypeInfo, 4> types;
-
-    // This is a terrible special case, but otherwise the archetypes
-    // aren't mapped correctly because the EnumImplStrategy ends up
-    // using the lowered cases, i.e. the cases for Optional<>.
-    if (type->classifyAsOptionalType() == OTK_ImplicitlyUnwrappedOptional) {
-      llvm_unreachable("Should not have IUOs.");
-    }
 
     for (auto &elt : enumElements) {
       auto caseType = elt.decl->getParentEnum()->mapTypeIntoContext(
@@ -5149,9 +5145,8 @@ namespace {
     }
 
     void addMetadataFlags() {
-      auto kind = Target->classifyAsOptionalType()
-                    ? MetadataKind::Optional
-                    : MetadataKind::Enum;
+      auto kind = Target->isOptionalDecl() ? MetadataKind::Optional
+                                           : MetadataKind::Enum;
       B.addInt(IGM.MetadataKindTy, unsigned(kind));
     }
 
@@ -5623,7 +5618,9 @@ IRGenModule::getAddrOfForeignTypeMetadataCandidate(CanType type) {
   } else if (auto structType = dyn_cast<StructType>(type)) {
     auto structDecl = structType->getDecl();
     assert(isa<ClangModuleUnit>(structDecl->getModuleScopeContext()));
-    
+
+    ImportedStructs.insert(structDecl);
+
     ForeignStructMetadataBuilder builder(*this, structDecl, init);
     builder.layout();
     addressPoint = builder.getOffsetOfAddressPoint();

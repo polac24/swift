@@ -313,28 +313,6 @@ FullApplySite swift::findApplyFromDevirtualizedResult(SILValue V) {
   return FullApplySite();
 }
 
-SILValue swift::isPartialApplyOfReabstractionThunk(PartialApplyInst *PAI) {
-  if (PAI->getNumArguments() != 1)
-    return SILValue();
-
-  auto *Fun = PAI->getReferencedFunction();
-  if (!Fun)
-    return SILValue();
-
-  // Make sure we have a reabstraction thunk.
-  if (Fun->isThunk() != IsReabstractionThunk)
-    return SILValue();
-
-  // The argument should be a closure.
-  auto Arg = PAI->getArgument(0);
-  if (!Arg->getType().is<SILFunctionType>() ||
-      !Arg->getType().isReferenceCounted(PAI->getFunction()->getModule()))
-    return SILValue();
-
-  return Arg;
-}
-
-
 // Replace a dead apply with a new instruction that computes the same
 // value, and delete the old apply.
 void swift::replaceDeadApply(ApplySite Old, ValueBase *New) {
@@ -524,8 +502,8 @@ SILValue swift::castValueToABICompatibleType(SILBuilder *B, SILLocation Loc,
   }
 
   // Check if src and dest types are optional.
-  auto OptionalSrcTy = SrcTy.getAnyOptionalObjectType();
-  auto OptionalDestTy = DestTy.getAnyOptionalObjectType();
+  auto OptionalSrcTy = SrcTy.getOptionalObjectType();
+  auto OptionalDestTy = DestTy.getOptionalObjectType();
 
   // Both types are optional.
   if (OptionalDestTy && OptionalSrcTy) {

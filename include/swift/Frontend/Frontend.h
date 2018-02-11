@@ -175,10 +175,12 @@ public:
   }
 
   void setSerializedDiagnosticsPath(StringRef Path) {
-    FrontendOpts.SerializedDiagnosticsPath = Path;
+    FrontendOpts.InputsAndOutputs.supplementaryOutputs()
+        .SerializedDiagnosticsPath = Path;
   }
   StringRef getSerializedDiagnosticsPath() const {
-    return FrontendOpts.SerializedDiagnosticsPath;
+    return FrontendOpts.InputsAndOutputs.supplementaryOutputs()
+        .SerializedDiagnosticsPath;
   }
 
   LangOptions &getLangOptions() {
@@ -521,9 +523,10 @@ private:
                                 Optional<unsigned> BufferID);
 
 public:
-  /// Frees up the ASTContext and SILModule objects that this instance is
-  /// holding on.
-  void freeContextAndSIL();
+  void freeASTContext();
+
+  /// Frees up the SILModule that this instance is holding on to.
+  void freeSILModule();
 
 private:
   /// Load stdlib & return true if should continue, i.e. no error

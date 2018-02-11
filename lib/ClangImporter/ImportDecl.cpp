@@ -1779,9 +1779,9 @@ static ImportedType rectifySubscriptTypes(Type getterType, bool getterIsIUO,
     return {nullptr, false};
 
   // Unwrap one level of optionality from each.
-  if (Type getterObjectType = getterType->getAnyOptionalObjectType())
+  if (Type getterObjectType = getterType->getOptionalObjectType())
     getterType = getterObjectType;
-  if (Type setterObjectType = setterType->getAnyOptionalObjectType())
+  if (Type setterObjectType = setterType->getOptionalObjectType())
     setterType = setterObjectType;
 
   // If they are still different, fail.
@@ -2043,7 +2043,7 @@ static void
 applyPropertyOwnership(VarDecl *prop,
                        clang::ObjCPropertyDecl::PropertyAttributeKind attrs) {
   Type ty = prop->getInterfaceType();
-  if (auto innerTy = ty->getAnyOptionalObjectType())
+  if (auto innerTy = ty->getOptionalObjectType())
     ty = innerTy;
   if (!ty->is<GenericTypeParamType>() && !ty->isAnyClassReferenceType())
     return;
@@ -3177,11 +3177,13 @@ namespace {
 
         // Bitfields are imported as computed properties with Clang-generated
         // accessors.
+        bool isBitField = false;
         if (auto field = dyn_cast<clang::FieldDecl>(nd)) {
           if (field->isBitField()) {
             // We can't represent this struct completely in SIL anymore,
             // but we're still able to define a memberwise initializer.
             hasUnreferenceableStorage = true;
+            isBitField = true;
 
             makeBitFieldAccessors(Impl,
                                   const_cast<clang::RecordDecl *>(decl),
@@ -3195,7 +3197,7 @@ namespace {
           // Indirect fields are created as computed property accessible the
           // fields on the anonymous field from which they are injected.
           makeIndirectFieldAccessors(Impl, ind, members, result, VD);
-        } else if (decl->isUnion()) {
+        } else if (decl->isUnion() && !isBitField) {
           // Union fields should only be available indirectly via a computed
           // property. Since the union is made of all of the fields at once,
           // this is a trivial accessor that casts self to the correct
@@ -4063,7 +4065,7 @@ namespace {
         result->setDynamicSelf(true);
         resultTy = DynamicSelfType::get(dc->getSelfInterfaceType(),
                                         Impl.SwiftContext);
-        assert(!dc->getSelfInterfaceType()->getAnyOptionalObjectType());
+        assert(!dc->getSelfInterfaceType()->getOptionalObjectType());
         isIUO = false;
 
         OptionalTypeKind nullability = OTK_ImplicitlyUnwrappedOptional;
@@ -5266,7 +5268,7 @@ SwiftDeclConverter::importSwiftNewtype(const clang::TypedefNameDecl *decl,
   if (!storedUnderlyingType)
     return nullptr;
 
-  if (auto objTy = storedUnderlyingType->getAnyOptionalObjectType())
+  if (auto objTy = storedUnderlyingType->getOptionalObjectType())
     storedUnderlyingType = objTy;
 
   // If the type is Unmanaged, that is it is not CF ARC audited,
@@ -5283,7 +5285,7 @@ SwiftDeclConverter::importSwiftNewtype(const clang::TypedefNameDecl *decl,
   auto computedPropertyUnderlyingType = Impl.importTypeIgnoreIUO(
       decl->getUnderlyingType(), ImportTypeKind::Property, isInSystemModule(dc),
       Bridgeability::Full, OTK_None);
-  if (auto objTy = computedPropertyUnderlyingType->getAnyOptionalObjectType())
+  if (auto objTy = computedPropertyUnderlyingType->getOptionalObjectType())
     computedPropertyUnderlyingType = objTy;
 
   bool isBridged =
@@ -5569,7 +5571,7 @@ Decl *SwiftDeclConverter::importGlobalAsInitializer(
   // Update the failability appropriately based on the imported method type.
   OptionalTypeKind initOptionality = OTK_None;
   if (importedType.isImplicitlyUnwrapped()) {
-    assert(importedType.getType()->getAnyOptionalObjectType());
+    assert(importedType.getType()->getOptionalObjectType());
     initOptionality = OTK_ImplicitlyUnwrappedOptional;
   } else if (importedType.getType()->getOptionalObjectType()) {
     initOptionality = OTK_Optional;
@@ -6104,18 +6106,21 @@ ConstructorDecl *SwiftDeclConverter::importConstructor(
 
   // Determine the failability of this initializer.
   auto oldFnType = type->castTo<AnyFunctionType>();
-  OptionalTypeKind failability;
-  (void)oldFnType->getResult()->getAnyOptionalObjectType(failability);
+  bool resultIsOptional;
+  (void)oldFnType->getResult()->getOptionalObjectType(resultIsOptional);
 
   // Update the failability appropriately based on the imported method type.
-  if (importedType.isImplicitlyUnwrapped()) {
-    assert(failability != OTK_None);
-    failability = OTK_ImplicitlyUnwrappedOptional;
+  assert(resultIsOptional || !importedType.isImplicitlyUnwrapped());
+  OptionalTypeKind failability = OTK_None;
+  if (resultIsOptional) {
+    failability = OTK_Optional;
+    if (importedType.isImplicitlyUnwrapped())
+      failability = OTK_ImplicitlyUnwrappedOptional;
   }
 
   // Rebuild the function type with the appropriate result type;
   Type resultTy = selfTy;
-  if (failability != OTK_None)
+  if (resultIsOptional)
     resultTy = OptionalType::get(resultTy);
 
   type = FunctionType::get(oldFnType->getInput(), resultTy,
